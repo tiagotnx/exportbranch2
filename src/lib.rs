@@ -89,7 +89,7 @@ fn destination_path(canonical_source: &Path, destination: &str) -> PathBuf {
     let relative: PathBuf = canonical_source
         .components()
         .filter(|c| !matches!(c, Component::Prefix(_) | Component::RootDir))
-        .map(|c| c.as_os_str())
+        .map(Component::as_os_str)
         .collect();
     Path::new(destination).join(relative)
 }

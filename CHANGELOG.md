@@ -4,6 +4,14 @@ All notable changes to `exportbranch` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project does not
 yet follow strict SemVer.
 
+## [0.1.4] - 2026-04-22
+
+### Fixed
+- Windows clippy: `destination_path` map closure replaced with the
+  `Component::as_os_str` method reference, satisfying
+  `clippy::redundant_closure_for_method_calls` under pedantic. The lint
+  only fires on Windows because the closure lives behind `cfg(windows)`.
+
 ## [0.1.3] - 2026-04-22
 
 ### Fixed
