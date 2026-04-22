@@ -4,6 +4,19 @@ All notable changes to `exportbranch` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project does not
 yet follow strict SemVer.
 
+## [0.1.2] - 2026-04-21
+
+### Fixed
+- **Windows**: destination path no longer accidentally rebases output to the
+  source's drive-relative path. The previous Windows-specific branch built
+  `dst.join(stripped_source)` where `stripped_source` started with `\`,
+  which under Windows path semantics is "drive-relative" and silently
+  discarded `dst`. Files were written next to the source instead of under
+  the requested destination, and `FileChecker::save` then failed because
+  `dst` itself was never created. The destination is now used as-is on
+  every platform — same behaviour Linux already had.
+- `ExportError::PathPrefix` removed (no longer constructed).
+
 ## [0.1.1] - 2026-04-21
 
 ### Fixed

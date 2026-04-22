@@ -36,7 +36,6 @@ pub use error::{ExportError, Result, WithPath};
 use configuration::Configuration;
 use export_branch::ExportBranch;
 use file_checker::FileChecker;
-use std::env;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -60,8 +59,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
 
 fn export(source: &str, destination: &str, configuration: &Configuration) -> Result<()> {
     let source_path_buffer = source_path(source)?;
-    let destination_path_buffer = destination_path(source, destination)?;
-    let mut file_checker = FileChecker::new(Path::new(destination).to_path_buf());
+    let destination_path_buffer = Path::new(destination).to_path_buf();
+    let mut file_checker = FileChecker::new(destination_path_buffer.clone());
     let mut export = ExportBranch::build(
         source_path_buffer,
         destination_path_buffer,
@@ -74,34 +73,6 @@ fn export(source: &str, destination: &str, configuration: &Configuration) -> Res
 
 fn source_path(source: &str) -> Result<PathBuf> {
     Path::new(source).canonicalize().with_path(source)
-}
-
-fn destination_path(source: &str, destination: &str) -> Result<PathBuf> {
-    if env::consts::OS == "windows" {
-        let windows_destination = Path::new(destination).to_path_buf();
-        let source_path = Path::new(source);
-        let windows_source_path = source_path
-            .ancestors()
-            .next()
-            .ok_or_else(|| ExportError::PathPrefix(source_path.to_path_buf()))?;
-
-        let first_component = windows_source_path
-            .components()
-            .next()
-            .ok_or_else(|| ExportError::PathPrefix(source_path.to_path_buf()))?;
-
-        return match first_component {
-            std::path::Component::Prefix(prefix) => {
-                let stripped = windows_source_path
-                    .strip_prefix(prefix.as_os_str())
-                    .map_err(|_| ExportError::PathPrefix(source_path.to_path_buf()))?;
-                Ok(windows_destination.join(stripped))
-            }
-            _ => Err(ExportError::PathPrefix(source_path.to_path_buf())),
-        };
-    }
-
-    Ok(Path::new(destination).to_path_buf())
 }
 
 fn print_time_elapsed(timer: Instant) {

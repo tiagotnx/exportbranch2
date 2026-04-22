@@ -19,7 +19,6 @@ pub enum ExportError {
         source: regex::Error,
     },
     MissingFileName(PathBuf),
-    PathPrefix(PathBuf),
     Metadata {
         path: PathBuf,
         source: io::Error,
@@ -41,9 +40,6 @@ impl fmt::Display for ExportError {
             }
             ExportError::MissingFileName(path) => {
                 write!(f, "path has no file name component: {}", path.display())
-            }
-            ExportError::PathPrefix(path) => {
-                write!(f, "failed to extract path prefix from: {}", path.display())
             }
             ExportError::Metadata { path, source } => {
                 write!(
