@@ -4,6 +4,17 @@ All notable changes to `exportbranch` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project does not
 yet follow strict SemVer.
 
+## [0.1.1] - 2026-04-21
+
+### Fixed
+- `to_nanos` rewritten with `map_or` to satisfy `clippy::map_unwrap_or`
+  under pedantic (CI was red on the freshly tagged 0.1.0).
+- `save_e_reload_preserva_entrada` no longer fails on Windows. The fixture
+  used `Duration::from_nanos(42)`, which rounds to 0 on Windows where
+  `SystemTime` resolution is 100 ns; the test now uses whole seconds.
+- Dockerfile's deps-only stage stubs `benches/convert.rs` so Cargo's
+  manifest parse succeeds before the real sources are copied in.
+
 ## [0.1.0] - 2026-04-21
 
 ### Changed (round 3 — argument parsing)
