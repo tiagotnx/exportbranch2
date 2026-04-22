@@ -136,9 +136,7 @@ impl FileChecker {
 // mtime ≥ 1970, so the only realistic path to 0 is a clock skew bug. A
 // collision would force one extra re-export per affected file — acceptable.
 fn to_nanos(t: SystemTime) -> u128 {
-    t.duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
+    t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos())
 }
 
 #[cfg(test)]
@@ -164,12 +162,15 @@ mod tests {
 
         let fake_file = dir.path().join("foo.prg");
         std::fs::write(&fake_file, b"x").unwrap();
-        let t = UNIX_EPOCH + Duration::from_nanos(42);
+        // Use whole seconds — `SystemTime` resolution is 100 ns on Windows,
+        // so sub-microsecond offsets get rounded and the round-trip would
+        // not match.
+        let t = UNIX_EPOCH + Duration::from_secs(42);
         checker.add_file(&fake_file, t);
         checker.save().unwrap();
 
         let reloaded = FileChecker::new(dir.path().to_path_buf());
         let key = fake_file.to_string_lossy().into_owned();
-        assert_eq!(reloaded.files.get(&key), Some(&42u128));
+        assert_eq!(reloaded.files.get(&key), Some(&42_000_000_000u128));
     }
 }
