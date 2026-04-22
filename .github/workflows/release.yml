@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build binaries for (e.g. v0.1.2)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -21,13 +27,22 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: exportbranch
-            asset: exportbranch-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: exportbranch.exe
-            asset: exportbranch-${{ github.ref_name }}-x86_64-pc-windows-msvc.zip
     steps:
+      - name: Resolve tag name
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.name }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -39,31 +54,43 @@ jobs:
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
+          asset="exportbranch-${{ steps.tag.outputs.name }}-${{ matrix.target }}.tar.gz"
           cd target/${{ matrix.target }}/release
-          tar -czf "$GITHUB_WORKSPACE/${{ matrix.asset }}" "${{ matrix.artifact }}"
+          tar -czf "$GITHUB_WORKSPACE/$asset" "${{ matrix.artifact }}"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.artifact }}" -DestinationPath "${{ matrix.asset }}"
+          $asset = "exportbranch-${{ steps.tag.outputs.name }}-${{ matrix.target }}.zip"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.artifact }}" -DestinationPath "$asset"
+          "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
 
   publish:
     name: attach to release
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve tag name
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-      - name: Upload assets to ${{ github.ref_name }}
+      - name: Upload assets to ${{ steps.tag.outputs.name }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ github.ref_name }}" dist/* \
+          gh release upload "${{ steps.tag.outputs.name }}" dist/* \
             --repo "${{ github.repository }}" \
             --clobber
