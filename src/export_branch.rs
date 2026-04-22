@@ -1,12 +1,15 @@
+#![allow(missing_docs)]
+
 use crate::configuration::Configuration;
-use crate::export::export;
-use crate::export_branch_files::checked_to_regex;
+use crate::error::{Result, WithPath};
+use crate::export::{export, WalkContext};
+use crate::export_branch_files::check_configuration_file;
 use crate::file_checker::FileChecker;
 use std::path::PathBuf;
 
 pub struct ExportBranch<'a> {
-    pub source: Box<PathBuf>,
-    pub destination: Box<PathBuf>,
+    pub source: PathBuf,
+    pub destination: PathBuf,
     pub configuration: &'a Configuration,
     pub file_checker: &'a mut FileChecker,
 }
@@ -19,31 +22,38 @@ impl<'a> ExportBranch<'a> {
         file_checker: &'a mut FileChecker,
     ) -> ExportBranch<'a> {
         ExportBranch {
-            source: Box::new(source),
-            destination: Box::new(destination.clone()),
+            source,
+            destination,
             configuration,
             file_checker,
         }
     }
 
-    pub fn perform_exporting(&mut self) {
-        let file_filters: Vec<String> = self.configuration.file_filters().clone();
-        let only_copy_files: Vec<String> = self.configuration.only_copy_files().clone();
+    pub fn perform_exporting(&mut self) -> Result<()> {
+        let (file_filters, only_copy_files) = check_configuration_file(
+            &self.source,
+            self.configuration.file_filters(),
+            self.configuration.only_copy_files(),
+        )?;
+        let destination = self.destination.clone();
 
-        if let Err(err) = export(
-            self,
-            *(self.source.clone()),
-            *(self.destination.clone()),
-            &checked_to_regex(file_filters),
-            &checked_to_regex(only_copy_files),
-        ) {
-            eprintln!("{}", err);
-            std::process::exit(1);
+        let updates = {
+            let ctx = WalkContext {
+                destination_root: &self.destination,
+                configuration: self.configuration,
+                file_checker: self.file_checker,
+                file_filters: &file_filters,
+                only_copy_files: &only_copy_files,
+            };
+            export(&ctx, &self.source, destination)?
+        };
+
+        for update in &updates {
+            self.file_checker.apply(update);
         }
 
-        if let Err(err) = self.file_checker.save() {
-            eprintln!("{}", err);
-            std::process::exit(1);
-        };
+        let checker_dir = self.file_checker.directory().to_path_buf();
+        self.file_checker.save().with_path(checker_dir)?;
+        Ok(())
     }
 }

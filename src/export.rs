@@ -1,199 +1,198 @@
+#![allow(missing_docs)]
+
+use crate::configuration::Configuration;
 use crate::convert_file::convert_file;
-use crate::export_branch::ExportBranch;
-use crate::export_branch_files::check_configuration_file;
-use crate::file_checker::FileStatus;
-use regex::Regex;
+use crate::error::{ExportError, Result, WithPath};
+use crate::file_checker::{FileChecker, FileStatus, FileUpdate};
+use rayon::prelude::*;
+use regex::RegexSet;
 use std::fs;
-use std::io::Result;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
-pub fn export(
-    exportbranch: &mut ExportBranch,
-    source: PathBuf,
-    destination: PathBuf,
-    file_filters: &Vec<Regex>,
-    only_copy_files: &Vec<Regex>,
-) -> Result<()> {
-    let (file_filters_regex, only_copy_files_regex) =
-        check_configuration_file(&source, file_filters.to_owned(), only_copy_files.to_owned());
-
-    let destination = format_lower(
-        destination,
-        &exportbranch.destination,
-        exportbranch.configuration.lower(),
-    );
-
-    if !destination.exists() {
-        fs::create_dir_all(&destination)?;
-    }
-
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let entry_path = entry.path();
-
-        if entry_path.is_dir() {
-            export_directory(
-                exportbranch,
-                entry_path,
-                &destination,
-                &file_filters_regex,
-                &only_copy_files_regex,
-            )?;
-        } else if entry_path.is_file() {
-            export_file(
-                exportbranch,
-                entry_path,
-                destination.join(entry.file_name()),
-                &file_filters_regex,
-                &only_copy_files_regex,
-            )?;
-        }
-    }
-
-    Ok(())
+pub struct WalkContext<'a> {
+    pub destination_root: &'a Path,
+    pub configuration: &'a Configuration,
+    pub file_checker: &'a FileChecker,
+    pub file_filters: &'a RegexSet,
+    pub only_copy_files: &'a RegexSet,
 }
 
-fn format_lower(destination: PathBuf, raw_destination: &PathBuf, lower: bool) -> PathBuf {
+fn is_disregarded(ctx: &WalkContext, dir: &Path) -> bool {
+    let disregarded = ctx.configuration.disregarded_directories();
+    // Fast path: the source root is canonicalized once in `lib::source_path`,
+    // so every entry yielded by `read_dir` is already canonical and a direct
+    // hash lookup is enough — no per-entry `canonicalize` syscall.
+    !disregarded.is_empty() && disregarded.contains(dir)
+}
+
+pub fn export(ctx: &WalkContext, source: &Path, destination: PathBuf) -> Result<Vec<FileUpdate>> {
+    let destination = format_lower(destination, ctx.destination_root, ctx.configuration.lower());
+
+    if !destination.exists() {
+        fs::create_dir_all(&destination).with_path(&destination)?;
+    }
+
+    let entries: Vec<fs::DirEntry> = fs::read_dir(source)
+        .with_path(source)?
+        .map(|e| e.with_path(source))
+        .collect::<Result<Vec<_>>>()?;
+
+    let nested: Vec<Vec<FileUpdate>> = entries
+        .into_par_iter()
+        .map(|entry| -> Result<Vec<FileUpdate>> {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                if is_disregarded(ctx, &entry_path) {
+                    return Ok(Vec::new());
+                }
+                export_directory(ctx, &entry_path, &destination)
+            } else if entry_path.is_file() {
+                let target = destination.join(entry.file_name());
+                Ok(export_file(ctx, entry_path, target)?.into_iter().collect())
+            } else {
+                Ok(Vec::new())
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(nested.into_iter().flatten().collect())
+}
+
+fn format_lower(destination: PathBuf, raw_destination: &Path, lower: bool) -> PathBuf {
     if !lower {
         return destination;
     }
 
-    let raw = raw_destination.to_str().unwrap();
-
-    raw_destination
-        .join(
-            {
-                let mut formated = destination.to_str().unwrap().replace(raw, "");
-
-                if formated.starts_with(std::path::MAIN_SEPARATOR) {
-                    formated.remove(0);
-                }
-
-                formated
-            }
-            .to_lowercase(),
-        )
-        .to_path_buf()
+    let suffix = destination
+        .strip_prefix(raw_destination)
+        .unwrap_or(&destination);
+    let lowered = suffix.to_string_lossy().to_lowercase();
+    raw_destination.join(lowered)
 }
 
 fn export_directory(
-    exportbranch: &mut ExportBranch,
-    source: PathBuf,
-    destination: &PathBuf,
-    file_filters: &Vec<Regex>,
-    only_copy_files: &Vec<Regex>,
-) -> Result<()> {
-    let entry_file_name = source.file_name().unwrap();
+    ctx: &WalkContext,
+    source: &Path,
+    destination: &Path,
+) -> Result<Vec<FileUpdate>> {
+    let entry_file_name = source
+        .file_name()
+        .ok_or_else(|| ExportError::MissingFileName(source.to_path_buf()))?;
     let dest_path = destination.join(entry_file_name);
-    export(
-        exportbranch,
-        source.to_path_buf(),
-        dest_path,
-        file_filters,
-        only_copy_files,
-    )
+    export(ctx, source, dest_path)
 }
 
 fn export_file(
-    exportbranch: &mut ExportBranch,
+    ctx: &WalkContext,
     source_file: PathBuf,
     destination_file: PathBuf,
-    file_filters: &Vec<Regex>,
-    only_copy_files: &Vec<Regex>,
-) -> Result<()> {
-    if !file_match(&source_file, file_filters) {
-        return Ok(());
+) -> Result<Option<FileUpdate>> {
+    if !file_match(&source_file, ctx.file_filters) {
+        return Ok(None);
     }
 
     let destination_file = format_lower(
         destination_file,
-        &exportbranch.destination,
-        exportbranch.configuration.lower(),
+        ctx.destination_root,
+        ctx.configuration.lower(),
     );
 
-    match file_need_update(&source_file, exportbranch, &destination_file) {
-        FileStatus::UpToDate => {
-            return Ok(());
-        }
-        FileStatus::Modified(system_time) => {
-            exportbranch
-                .file_checker
-                .add_file(&source_file, system_time);
-        }
-    }
+    let modified = match file_need_update(&source_file, ctx, &destination_file) {
+        FileStatus::UpToDate => return Ok(None),
+        FileStatus::Modified(system_time) => system_time,
+    };
 
-    let only_copy = file_match(&source_file, only_copy_files);
+    let only_copy = file_match(&source_file, ctx.only_copy_files);
 
     print_file(only_copy, &source_file, &destination_file);
 
     if only_copy {
-        match fs::copy(&source_file, destination_file) {
-            Err(err) => {
-                eprint!("Error copying file: {}", err);
-                exportbranch.file_checker.remove_file(&source_file);
-            }
-            _ => {}
-        };
+        fs::copy(&source_file, &destination_file).with_path(&source_file)?;
     } else {
-        match convert_file(&source_file, destination_file) {
-            Err(err) => {
-                eprint!("Error copying file: {}", err);
-                exportbranch.file_checker.remove_file(&source_file);
-            }
-            _ => {}
-        };
+        convert_file(&source_file, &destination_file).with_path(&source_file)?;
     }
 
-    Ok(())
+    Ok(Some(FileUpdate {
+        path: source_file,
+        modified,
+    }))
 }
 
-fn print_file(only_copy: bool, entry_path: &PathBuf, dest_path: &PathBuf) {
-    println!(
-        "{}\r\nsource.....: {}\r\ndestination: {}\r\n",
-        {
-            if only_copy {
-                "copying..."
-            } else {
-                "converting..."
-            }
-        },
-        source_path_display(&entry_path.to_string_lossy()),
+fn print_file(only_copy: bool, entry_path: &Path, dest_path: &Path) {
+    let label = if only_copy {
+        "copying..."
+    } else {
+        "converting..."
+    };
+    let entry_str = entry_path.to_string_lossy();
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    let _ = writeln!(
+        handle,
+        "{label}\r\nsource.....: {}\r\ndestination: {}\r",
+        source_path_display(&entry_str),
         dest_path.to_string_lossy()
     );
 }
 
 #[cfg(target_os = "windows")]
 fn source_path_display(entry_path: &str) -> &str {
-    &entry_path[4..]
+    entry_path.strip_prefix(r"\\?\").unwrap_or(entry_path)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "windows"))]
 fn source_path_display(entry_path: &str) -> &str {
     entry_path
 }
 
-fn file_match(file: &PathBuf, file_filters: &Vec<Regex>) -> bool {
-    let file_name = file.file_name().unwrap().to_str().unwrap();
-
-    for file_filter in file_filters {
-        if file_filter.is_match(&file_name) {
-            return true;
-        }
-    }
-
-    false
+fn file_match(file: &Path, filters: &RegexSet) -> bool {
+    let Some(file_name) = file.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    filters.is_match(file_name)
 }
 
-fn file_need_update(
-    file: &PathBuf,
-    exportbranch: &mut ExportBranch,
-    destination_file: &PathBuf,
-) -> FileStatus {
-    let configuration = exportbranch.configuration;
+fn file_need_update(file: &Path, ctx: &WalkContext, destination_file: &Path) -> FileStatus {
+    let configuration = ctx.configuration;
 
-    if configuration.reload() || (configuration.md5() && !destination_file.exists()) {
-        return exportbranch.file_checker.force_update(file);
+    if configuration.reload() || (configuration.exists() && !destination_file.exists()) {
+        return ctx.file_checker.force_update(file);
     }
 
-    exportbranch.file_checker.check(file)
+    ctx.file_checker.check(file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::export_branch_files::checked_to_regex_set;
+
+    #[test]
+    fn file_match_casa_extensao_prg() {
+        let set = checked_to_regex_set(&["*.prg".to_string()]).unwrap();
+        let path = PathBuf::from("foo.prg");
+        assert!(file_match(&path, &set));
+    }
+
+    #[test]
+    fn file_match_nao_casa_extensao_diferente() {
+        let set = checked_to_regex_set(&["*.prg".to_string()]).unwrap();
+        let path = PathBuf::from("foo.txt");
+        assert!(!file_match(&path, &set));
+    }
+
+    #[test]
+    fn file_match_aceita_qualquer_um_dos_filtros() {
+        let set = checked_to_regex_set(&["*.prg".to_string(), "*.ch".to_string()]).unwrap();
+        assert!(file_match(&PathBuf::from("a.prg"), &set));
+        assert!(file_match(&PathBuf::from("b.ch"), &set));
+        assert!(!file_match(&PathBuf::from("c.txt"), &set));
+    }
+
+    #[test]
+    fn file_match_aceita_path_sem_nome_retorna_false() {
+        let set = checked_to_regex_set(&["*.prg".to_string()]).unwrap();
+        assert!(!file_match(Path::new(""), &set));
+    }
 }

@@ -1,93 +1,163 @@
-use regex::Regex;
+#![allow(missing_docs)]
+
+use crate::error::{ExportError, Result, WithPath};
+use regex::RegexSet;
 use std::fs;
-use std::io::Error;
-use std::io::ErrorKind;
 use std::io::Read;
-use std::io::Result;
-use std::path::PathBuf;
+use std::path::Path;
 
 pub fn check_configuration_file(
-    directory: &PathBuf,
-    file_filters: Vec<Regex>,
-    only_copy_files: Vec<Regex>,
-) -> (Vec<Regex>, Vec<Regex>) {
-    let config_only_copy = read_config_file(directory, "extecoesapenascopiar.exb");
-    let config_do_not_convert = read_config_file(directory, "naoconverteacentos.exb");
+    directory: &Path,
+    default_file_filters: &[String],
+    default_only_copy: &[String],
+) -> Result<(RegexSet, RegexSet)> {
+    let config_file_filters = read_config_file(directory, "filtrosarquivos.exb")?;
+    let config_only_copy = read_config_file(directory, "extecoesapenascopiar.exb")?;
+    let config_do_not_convert = read_config_file(directory, "naoconverteacentos.exb")?;
 
-    (
-        check_filters(&config_only_copy, file_filters),
-        check_only_copy(config_only_copy, config_do_not_convert, only_copy_files),
-    )
+    let file_filters = config_file_filters
+        .as_deref()
+        .unwrap_or(default_file_filters);
+    let mut only_copy: Vec<String> = Vec::new();
+    if let Some(files) = config_only_copy {
+        only_copy.extend(files);
+    }
+    if let Some(files) = config_do_not_convert {
+        only_copy.extend(files);
+    }
+    let only_copy_slice: &[String] = if only_copy.is_empty() {
+        default_only_copy
+    } else {
+        &only_copy
+    };
+
+    Ok((
+        checked_to_regex_set(file_filters)?,
+        checked_to_regex_set(only_copy_slice)?,
+    ))
 }
 
-pub fn checked_to_regex(checked: Vec<String>) -> Vec<Regex> {
-    let mut regex: Vec<Regex> = vec![];
+pub fn checked_to_regex_set(checked: &[String]) -> Result<RegexSet> {
+    let patterns: Vec<String> = checked
+        .iter()
+        .map(|file| {
+            let body = file.replace('.', "\\.").replace('*', ".*");
+            format!("^{body}$")
+        })
+        .collect();
 
-    for file in checked {
-        let file = file.replace(".", "\\.").replace("*", ".*");
-        regex.push(Regex::new(&file).unwrap());
-    }
-
-    regex
+    RegexSet::new(&patterns).map_err(|source| ExportError::InvalidGlob {
+        pattern: checked.join(","),
+        source,
+    })
 }
 
-fn check_filters(
-    config_only_copy: &Result<Vec<String>>,
-    only_copy_files: Vec<Regex>,
-) -> Vec<Regex> {
-    match config_only_copy {
-        Ok(checked) => checked_to_regex(checked.clone()),
-        Err(_) => only_copy_files,
-    }
-}
-
-fn check_only_copy(
-    config_only_copy: Result<Vec<String>>,
-    config_do_not_convert: Result<Vec<String>>,
-    only_copy_files: Vec<Regex>,
-) -> Vec<Regex> {
-    if config_only_copy.is_err() && config_do_not_convert.is_err() {
-        return only_copy_files;
-    }
-
-    let mut checked: Vec<String> = vec![];
-
-    if let Ok(mut files) = config_only_copy {
-        checked.append(&mut files);
-    }
-
-    if let Ok(mut files) = config_do_not_convert {
-        checked.append(&mut files);
-    }
-
-    checked_to_regex(checked)
-}
-
-fn read_config_file(directory: &PathBuf, config_file: &str) -> Result<Vec<String>> {
-    let file_name: PathBuf = directory.join(config_file);
+fn read_config_file(directory: &Path, config_file: &str) -> Result<Option<Vec<String>>> {
+    let file_name = directory.join(config_file);
 
     if !file_name.exists() {
-        return Err(Error::new(
-            ErrorKind::NotFound,
-            format!("File not found: {:?}", file_name),
-        ));
+        return Ok(None);
     }
 
-    let mut file: fs::File = fs::File::open(file_name)?;
-    let mut config_file_buffer: String = String::new();
+    let mut file = fs::File::open(&file_name).with_path(&file_name)?;
+    let mut config_file_buffer = String::new();
 
-    file.read_to_string(&mut config_file_buffer)?;
+    file.read_to_string(&mut config_file_buffer)
+        .with_path(&file_name)?;
 
-    let config_file_vec: Vec<&str> = config_file_buffer.split(";").collect::<Vec<&str>>();
     let mut config: Vec<String> = vec![];
 
-    for file in config_file_vec {
-        let file_filter = file.replace(char::from(10), "").replace(char::from(13), "");
+    for file in config_file_buffer.split(';') {
+        let file_filter = file.replace(['\n', '\r'], "");
 
         if !file_filter.is_empty() {
             config.push(file_filter);
         }
     }
 
-    Ok(config)
+    Ok(Some(config))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_to_regex_set_aceita_glob_simples() {
+        let set = checked_to_regex_set(&["*.prg".to_string()]).unwrap();
+        assert_eq!(set.len(), 1);
+        assert!(set.is_match("foo.prg"));
+        assert!(set.is_match("bar.prg"));
+    }
+
+    #[test]
+    fn checked_to_regex_set_escapa_ponto() {
+        let set = checked_to_regex_set(&["*.h".to_string()]).unwrap();
+        assert!(set.is_match("foo.h"));
+    }
+
+    #[test]
+    fn checked_to_regex_set_h_nao_casa_html() {
+        let set = checked_to_regex_set(&["*.h".to_string()]).unwrap();
+        assert!(set.is_match("foo.h"));
+        assert!(
+            !set.is_match("foo.html"),
+            "âncora `^...$` impede *.h de casar foo.html"
+        );
+    }
+
+    #[test]
+    fn checked_to_regex_set_prg_nao_casa_prefixo_programa() {
+        let set = checked_to_regex_set(&["*.prg".to_string()]).unwrap();
+        assert!(!set.is_match("foo.prg.bak"));
+    }
+
+    #[test]
+    fn checked_to_regex_set_propaga_erro_em_glob_invalido() {
+        let result = checked_to_regex_set(&["[".to_string()]);
+        assert!(matches!(result, Err(ExportError::InvalidGlob { .. })));
+    }
+
+    #[test]
+    fn check_configuration_file_sem_arquivos_retorna_filtros_originais() {
+        let dir = tempfile::tempdir().unwrap();
+        let defaults_filters = vec!["*.prg".to_string()];
+        let defaults_copy = vec!["*.h".to_string()];
+
+        let (filters, copy) =
+            check_configuration_file(dir.path(), &defaults_filters, &defaults_copy).unwrap();
+
+        assert!(filters.is_match("foo.prg"));
+        assert!(copy.is_match("bar.h"));
+    }
+
+    #[test]
+    fn check_configuration_file_com_filtrosarquivos_exb_substitui_filtros() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("filtrosarquivos.exb"), "*.txt;*.md").unwrap();
+
+        let defaults_filters = vec!["*.prg".to_string()];
+        let defaults_copy = vec!["*.h".to_string()];
+        let (filters, _) =
+            check_configuration_file(dir.path(), &defaults_filters, &defaults_copy).unwrap();
+
+        assert!(filters.is_match("foo.txt"));
+        assert!(filters.is_match("bar.md"));
+        assert!(!filters.is_match("foo.prg"));
+    }
+
+    #[test]
+    fn check_configuration_file_com_extecoesapenascopiar_nao_altera_file_filters() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("extecoesapenascopiar.exb"), "*.a;*.so").unwrap();
+
+        let defaults_filters = vec!["*.prg".to_string()];
+        let defaults_copy = vec!["*.h".to_string()];
+        let (filters, copy) =
+            check_configuration_file(dir.path(), &defaults_filters, &defaults_copy).unwrap();
+
+        assert!(filters.is_match("foo.prg"));
+        assert!(copy.is_match("libx.a"));
+        assert!(copy.is_match("libx.so"));
+    }
 }
