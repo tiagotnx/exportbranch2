@@ -4,6 +4,19 @@ All notable changes to `exportbranch` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project does not
 yet follow strict SemVer.
 
+## [0.1.3] - 2026-04-22
+
+### Fixed
+- **Windows**: source path is again mirrored under destination — a source
+  like `L:\trunk\include` lands at `<destination>\trunk\include`. v0.1.2
+  collapsed this to flat behaviour to work around the drive-relative join
+  bug; this release restores the mirror by stripping both the drive
+  `Prefix` *and* the `RootDir` component before joining, so the result is
+  a true relative path that `PathBuf::push` appends instead of replacing.
+- End-to-end tests are now platform-aware about where output lands
+  (`dest_root_for(src, dst)`), so Linux flat and Windows mirror semantics
+  both stay green.
+
 ## [0.1.2] - 2026-04-21
 
 ### Fixed

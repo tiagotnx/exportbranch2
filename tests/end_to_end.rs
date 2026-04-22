@@ -22,6 +22,26 @@ fn run_export(src: &Path, dst: &Path, extra: &[&str]) {
     exportbranch::run(args).expect("run should succeed");
 }
 
+/// Where files for `src` actually land under `dst`. On Linux the
+/// destination is used as-is (`dst/<rel>`). On Windows the canonical
+/// source path (minus drive prefix and root) is mirrored under `dst`,
+/// so a source `L:\trunk\include` lands at `<dst>\trunk\include`.
+fn dest_root_for(src: &Path, dst: &Path) -> PathBuf {
+    if cfg!(windows) {
+        let canonical = src.canonicalize().expect("source must exist");
+        let mut out = dst.to_path_buf();
+        for c in canonical.components() {
+            match c {
+                std::path::Component::Prefix(_) | std::path::Component::RootDir => {}
+                other => out.push(other.as_os_str()),
+            }
+        }
+        out
+    } else {
+        dst.to_path_buf()
+    }
+}
+
 #[test]
 fn exporta_arquivo_prg_default() {
     let tmp = TempDir::new().unwrap();
@@ -33,8 +53,9 @@ fn exporta_arquivo_prg_default() {
 
     run_export(&src, &dst, &[]);
 
+    let root = dest_root_for(&src, &dst);
     assert!(
-        dst.join("hello.prg").exists(),
+        root.join("hello.prg").exists(),
         "*.prg deveria ter sido exportado"
     );
 }
@@ -50,8 +71,9 @@ fn nao_exporta_arquivo_fora_dos_filtros() {
 
     run_export(&src, &dst, &[]);
 
+    let root = dest_root_for(&src, &dst);
     assert!(
-        !dst.join("ignored.txt").exists(),
+        !root.join("ignored.txt").exists(),
         "*.txt não está nos filtros default"
     );
 }
@@ -67,7 +89,8 @@ fn exporta_recursivamente() {
 
     run_export(&src, &dst, &[]);
 
-    assert!(dst.join("sub").join("nested.prg").exists());
+    let root = dest_root_for(&src, &dst);
+    assert!(root.join("sub").join("nested.prg").exists());
 }
 
 #[test]
@@ -89,23 +112,25 @@ fn disregarded_directories_nao_sao_exportadas() {
 
     run_export(&src, &dst, &[]);
 
+    let root = dest_root_for(&src, &dst);
     assert!(
-        !dst.join("bin").join("foo.prg").exists(),
+        !root.join("bin").join("foo.prg").exists(),
         "bin/ é disregarded"
     );
     assert!(
-        !dst.join("lib").join("bar.prg").exists(),
+        !root.join("lib").join("bar.prg").exists(),
         "lib/ é disregarded"
     );
     assert!(
-        !dst.join("programas_externos")
+        !root
+            .join("programas_externos")
             .join("conversoes")
             .join("baz.prg")
             .exists(),
         "programas_externos/conversoes é disregarded"
     );
     assert!(
-        dst.join("app").join("ok.prg").exists(),
+        root.join("app").join("ok.prg").exists(),
         "diretório normal deve ser exportado"
     );
 }
@@ -129,9 +154,10 @@ fn export_paralelo_processa_todos_arquivos() {
 
     run_export(&src, &dst, &[]);
 
+    let root = dest_root_for(&src, &dst);
     let mut actual: HashSet<PathBuf> = HashSet::new();
-    for entry in walkdir(&dst) {
-        let rel = entry.strip_prefix(&dst).unwrap().to_path_buf();
+    for entry in walkdir(&root) {
+        let rel = entry.strip_prefix(&root).unwrap().to_path_buf();
         if rel.extension().and_then(|s| s.to_str()) == Some("prg") {
             actual.insert(rel);
         }
@@ -167,7 +193,8 @@ fn copia_arquivos_only_copy_sem_converter() {
 
     run_export(&src, &dst, &[]);
 
-    let copied = fs::read(dst.join("foo.h")).unwrap();
+    let root = dest_root_for(&src, &dst);
+    let copied = fs::read(root.join("foo.h")).unwrap();
     assert_eq!(
         copied, content,
         "*.h está em DEFAULT_ONLY_COPY_FILES → deve ser copiado byte-a-byte"
