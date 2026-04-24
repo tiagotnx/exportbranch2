@@ -20,6 +20,8 @@ pub mod configuration;
 pub mod convert_file;
 /// Static lookup tables driving the conversion engine.
 pub mod convertions;
+/// Opt-in debug log (`--debug`) for post-mortem diagnostics.
+pub mod debug_log;
 /// Typed error enum and the `WithPath` extension trait.
 pub mod error;
 /// Parallel directory walk and per-file dispatch.
@@ -43,7 +45,32 @@ use std::time::Instant;
 /// CLI entry point. `args` is the full process argv (including the binary name).
 pub fn run(args: Vec<String>) -> Result<()> {
     let timer = Instant::now();
+    let argv_snapshot = args.clone();
     let configuration = Configuration::build(&mut args.into_iter())?;
+
+    let log = configuration.debug_log();
+    debug_log!(log, "exportbranch {}", env!("CARGO_PKG_VERSION"));
+    debug_log!(log, "argv: {argv_snapshot:?}");
+    debug_log!(log, "source: {:?}", configuration.source());
+    debug_log!(log, "destination: {:?}", configuration.destination());
+    debug_log!(log, "file_filters: {:?}", configuration.file_filters());
+    debug_log!(
+        log,
+        "only_copy_files: {:?}",
+        configuration.only_copy_files()
+    );
+    debug_log!(
+        log,
+        "flags: exists={} reload={} lower={}",
+        configuration.exists(),
+        configuration.reload(),
+        configuration.lower()
+    );
+    debug_log!(
+        log,
+        "disregarded_directories: {:?}",
+        configuration.disregarded_directories()
+    );
 
     configuration.print();
 
@@ -53,13 +80,18 @@ pub fn run(args: Vec<String>) -> Result<()> {
         }
     }
 
+    debug_log!(log, "finished in {} secs", timer.elapsed().as_secs());
     print_time_elapsed(timer);
     Ok(())
 }
 
 fn export(source: &str, destination: &str, configuration: &Configuration) -> Result<()> {
+    let log = configuration.debug_log();
+    debug_log!(log, "export start: -s {source:?} -d {destination:?}");
     let source_path_buffer = source_path(source)?;
     let destination_path_buffer = destination_path(source, destination)?;
+    debug_log!(log, "  source canonical: {source_path_buffer:?}");
+    debug_log!(log, "  destination resolved: {destination_path_buffer:?}");
     let mut file_checker = FileChecker::new(destination_path_buffer.clone());
     let mut export = ExportBranch::build(
         source_path_buffer,
@@ -68,7 +100,12 @@ fn export(source: &str, destination: &str, configuration: &Configuration) -> Res
         &mut file_checker,
     );
 
-    export.perform_exporting()
+    let result = export.perform_exporting();
+    match &result {
+        Ok(()) => debug_log!(log, "export ok: -s {source:?} -d {destination:?}"),
+        Err(e) => debug_log!(log, "export failed: -s {source:?} -d {destination:?}: {e}"),
+    }
+    result
 }
 
 fn source_path(source: &str) -> Result<PathBuf> {
@@ -77,22 +114,21 @@ fn source_path(source: &str) -> Result<PathBuf> {
 
 /// Build the destination root for an export.
 ///
-/// On Windows we mirror the *raw* source path (the string the user passed
-/// to `-s`, before canonicalisation) under the destination drive: the
-/// drive `Prefix` of the source is stripped, and the remainder — which
-/// still carries the leading `\` — is `join`ed onto `destination`.
-/// Because Windows path semantics make `PathBuf::join` keep only the
-/// `Prefix` of the left-hand side when the right-hand side has a root,
-/// the destination's drive letter is preserved and everything after it is
-/// replaced by the source layout. Examples:
+/// On Windows `destination` is used as a root and the source layout (minus
+/// its drive `Prefix`) is mirrored underneath it. The drive of the source
+/// is stripped, the leading root component (`\`) is dropped so that
+/// `Path::join` treats the remainder as *relative*, and the result is
+/// joined onto `destination`. Examples:
 ///
 /// - `-s L:\trunk\frente -d R:\` → `R:\trunk\frente`
-/// - `-s L:\trunk\include -d R:\anything` → `R:\trunk\include`
+/// - `-s L:\trunk\frente -d R:\Trunk2` → `R:\Trunk2\trunk\frente`
+/// - `-s T:\new -d L:\trunk2\` → `L:\trunk2\new`
+/// - `-s C:\ProdutosSG\Trunk -d E:\` → `E:\ProdutosSG\Trunk`
 ///
-/// This matches the historical `MateusZanchoNeto/exportbranch` behaviour
-/// production scripts depend on: a single `-d <drive>:\` invoked once per
-/// source root sends each source to its own subtree on the destination
-/// drive instead of colliding at the root.
+/// Dropping the root component matters because Windows `Path::join` would
+/// otherwise keep only the `Prefix` of the left-hand side when the
+/// right-hand side has a root — which would collapse `R:\Trunk2` back to
+/// `R:\`, the v0.1.6 behaviour this release replaces.
 ///
 /// On other platforms the destination is used as-is.
 #[cfg(windows)]
@@ -106,7 +142,11 @@ fn destination_path(raw_source: &str, destination: &str) -> Result<PathBuf> {
     let stripped = source_path
         .strip_prefix(prefix.as_os_str())
         .map_err(|_| ExportError::MissingDrivePrefix(source_path.to_path_buf()))?;
-    Ok(Path::new(destination).join(stripped))
+    let relative: PathBuf = stripped
+        .components()
+        .filter(|c| !matches!(c, Component::RootDir))
+        .collect();
+    Ok(Path::new(destination).join(relative))
 }
 
 #[cfg(not(windows))]
@@ -143,13 +183,22 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
-    fn destination_path_em_windows_descarta_path_apos_drive_no_destination() {
-        // Quando o destination tem path além do drive, o `join` com um
-        // source que começa com `\` (root sem prefix) preserva apenas o
-        // drive do destination. Documenta a semântica — é o que a
-        // referência `MateusZanchoNeto/exportbranch` sempre fez.
-        let out = destination_path(r"L:\trunk\frente", r"R:\anything\else").unwrap();
-        assert_eq!(out, PathBuf::from(r"R:\trunk\frente"));
+    fn destination_path_em_windows_preserva_path_apos_drive_no_destination() {
+        // `-s L:\trunk\frente -d R:\Trunk2` → `R:\Trunk2\trunk\frente`.
+        // Diferente do v0.1.6 (que descartava `\Trunk2`): agora o destination
+        // é usado como raiz e o source é espelhado (sem drive) abaixo dele.
+        let out = destination_path(r"L:\trunk\frente", r"R:\Trunk2").unwrap();
+        assert_eq!(out, PathBuf::from(r"R:\Trunk2\trunk\frente"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn destination_path_caso_do_bug_reportado() {
+        // `-s T:\new -d L:\trunk2\` → `L:\trunk2\new`.
+        // Regressão: o v0.1.6 colapsava para `L:\new` e o usuário esperava
+        // a forma com o `trunk2` preservado.
+        let out = destination_path(r"T:\new", r"L:\trunk2\").unwrap();
+        assert_eq!(out, PathBuf::from(r"L:\trunk2\new"));
     }
 
     #[test]

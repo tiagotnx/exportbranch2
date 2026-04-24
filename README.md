@@ -21,6 +21,7 @@ exportbranch -s <source> -d <destination> [options]
 | `--reload`           | Re-export all files, ignoring the modification tracker.                    |
 | `--lower`            | Lowercase directory and file names under the destination.                  |
 | `--show`             | Print the parsed configuration before exporting.                           |
+| `--debug [PATH]`     | Write a debug log to `PATH` (default: `exportbranch-<unix_secs>.log`).     |
 
 ### Globs
 
@@ -29,25 +30,32 @@ Patterns are matched against the **file name only** and are anchored end-to-end.
 
 ### Destination layout (Windows)
 
-On Windows, the destination is **always resolved under the drive of `-d`**:
-the source drive `Prefix` (e.g. `L:`, `C:`) is stripped, and the rest of
-the source path is joined onto the destination. Anything you pass after
-the drive in `-d` is discarded — Windows path semantics drop the
-destination's path-after-prefix when the right-hand side of a join has a
-root.
+On Windows, `-d` is used as a **root** and the source layout (minus its
+drive) is mirrored underneath it. The source drive `Prefix` (e.g. `L:`,
+`C:`) is stripped, the leading root separator is dropped so the
+remainder is treated as a relative path, and the result is joined onto
+`-d`. This preserves any subpath you pass to `-d`.
 
 Examples (Windows):
 
 | `-s` | `-d` | Files land under |
 | ---- | ---- | ---------------- |
-| `L:\trunk\frente`  | `R:\`               | `R:\trunk\frente\…`  |
-| `L:\trunk\include` | `R:\anything\else`  | `R:\trunk\include\…` |
-| `C:\ProdutosSG\Branches\Trunk` | `E:\` | `E:\ProdutosSG\Branches\Trunk\…` |
+| `L:\trunk\frente`              | `R:\`         | `R:\trunk\frente\…`          |
+| `L:\trunk\frente`              | `R:\Trunk2`   | `R:\Trunk2\trunk\frente\…`   |
+| `T:\new`                       | `L:\trunk2\`  | `L:\trunk2\new\…`            |
+| `C:\ProdutosSG\Branches\Trunk` | `E:\`         | `E:\ProdutosSG\Branches\Trunk\…` |
 
-The practical consequence is that a wrapper script can invoke
-`exportbranch` repeatedly with the **same** `-d <drive>:\` and several
-different `-s` roots without the outputs colliding at the drive root —
-each source keeps its own subtree under the destination drive.
+A wrapper script can still invoke `exportbranch` repeatedly with the
+**same** `-d <drive>:\` and several different `-s` roots without the
+outputs colliding — each source keeps its own subtree under the
+destination.
+
+#### Drive inheritance in `-s`
+
+Items of `-s` without a drive `Prefix` inherit the drive of the first
+item, so `T:\new;\src;\include` is shorthand for
+`T:\new;T:\src;T:\include`. The first item must carry a drive; if it
+does not, the command fails with `MissingDrivePrefix`.
 
 On Linux/macOS `-d` is used as-is.
 

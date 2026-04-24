@@ -1,5 +1,6 @@
 #![allow(missing_docs)]
 
+use crate::debug_log::{default_log_path, DebugLog};
 use crate::error::{ExportError, Result, WithPath};
 use clap::{ArgAction, Parser};
 use std::collections::HashSet;
@@ -69,6 +70,11 @@ struct Cli {
     /// Lowercase directory and file names under the destination.
     #[arg(long, action = ArgAction::SetTrue)]
     lower: bool,
+
+    /// Write a debug log to PATH. If the flag is given without a value,
+    /// writes to `exportbranch-<unix_secs>.log` in the current directory.
+    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "")]
+    debug: Option<String>,
 }
 
 pub struct Configuration {
@@ -81,6 +87,53 @@ pub struct Configuration {
     reload: bool,
     lower: bool,
     disregarded_directories: HashSet<PathBuf>,
+    debug_log: Option<DebugLog>,
+}
+
+/// On Windows, rewrites items of `-s` that are drive-relative (leading
+/// `\` or `/`) so they inherit the drive `Prefix` of the first item.
+/// Lets users write `T:\new;\src;\include` as shorthand for
+/// `T:\new;T:\src;T:\include`. Items with their own drive and items
+/// without a leading separator (`src`) pass through unchanged. If a
+/// drive-relative item needs to inherit and the first item has no drive
+/// to inherit from, returns `MissingDrivePrefix`.
+#[cfg(windows)]
+fn normalize_source_drives(sources: Vec<String>) -> Result<Vec<String>> {
+    use std::path::Component;
+
+    let mut iter = sources.into_iter();
+    let Some(first) = iter.next() else {
+        return Ok(Vec::new());
+    };
+
+    let prefix = match Path::new(&first).components().next() {
+        Some(Component::Prefix(p)) => Some(p.as_os_str().to_os_string()),
+        _ => None,
+    };
+
+    let mut out = vec![first];
+    for item in iter {
+        let has_prefix = matches!(
+            Path::new(&item).components().next(),
+            Some(Component::Prefix(_))
+        );
+        let needs_inherit = !has_prefix && (item.starts_with('\\') || item.starts_with('/'));
+        if needs_inherit {
+            match prefix.as_ref() {
+                Some(p) => out.push(format!("{}{}", p.to_string_lossy(), item)),
+                None => return Err(ExportError::MissingDrivePrefix(PathBuf::from(&item))),
+            }
+        } else {
+            out.push(item);
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(not(windows))]
+#[allow(clippy::unnecessary_wraps)]
+fn normalize_source_drives(sources: Vec<String>) -> Result<Vec<String>> {
+    Ok(sources)
 }
 
 impl Configuration {
@@ -107,6 +160,14 @@ impl Configuration {
                 "source and destination cannot be empty".into(),
             ));
         }
+
+        let source = normalize_source_drives(source)?;
+
+        let debug_log = match cli.debug {
+            None => None,
+            Some(ref p) if p.is_empty() => Some(DebugLog::create(&default_log_path())?),
+            Some(ref p) => Some(DebugLog::create(Path::new(p))?),
+        };
 
         let mut disregarded_directories: HashSet<PathBuf> = HashSet::new();
         for source_directory in &source {
@@ -143,6 +204,7 @@ impl Configuration {
             lower: cli.lower,
             disregarded_directories,
             show: cli.show,
+            debug_log,
         })
     }
 
@@ -193,6 +255,10 @@ impl Configuration {
 
     pub fn disregarded_directories(&self) -> &HashSet<PathBuf> {
         &self.disregarded_directories
+    }
+
+    pub fn debug_log(&self) -> Option<&DebugLog> {
+        self.debug_log.as_ref()
     }
 }
 
@@ -321,5 +387,105 @@ mod tests {
         let arg_s = format!("--source={p}");
         let cfg = Configuration::build(&mut args_iter(&[&arg_s, "--destination=/tmp"])).unwrap();
         assert_eq!(cfg.source(), &vec![p.to_string()]);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn normalize_source_drives_item_sem_drive_herda_drive_do_primeiro() {
+        let out =
+            normalize_source_drives(vec![r"T:\new".into(), r"\src".into(), r"\include".into()])
+                .unwrap();
+        assert_eq!(
+            out,
+            vec![
+                r"T:\new".to_string(),
+                r"T:\src".to_string(),
+                r"T:\include".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn normalize_source_drives_item_com_forward_slash_herda_drive() {
+        let out = normalize_source_drives(vec![r"T:\new".into(), r"/src".into()]).unwrap();
+        assert_eq!(out, vec![r"T:\new".to_string(), r"T:/src".to_string()]);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn normalize_source_drives_primeiro_sem_drive_com_herdeiro_retorna_erro() {
+        // Primeiro item é drive-relative e o segundo também tenta herdar →
+        // não há drive de onde herdar, erro imediato.
+        let err = normalize_source_drives(vec![r"\src".into(), r"\include".into()]).unwrap_err();
+        assert!(matches!(err, ExportError::MissingDrivePrefix(_)));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn normalize_source_drives_unico_item_sem_drive_passa_como_esta() {
+        // Ninguém para herdar: deixa passar e o canonicalize lida com o erro.
+        let out = normalize_source_drives(vec![r"\src".into()]).unwrap();
+        assert_eq!(out, vec![r"\src".to_string()]);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn normalize_source_drives_preserva_items_com_drive_proprio() {
+        let out = normalize_source_drives(vec![r"T:\new".into(), r"U:\other".into()]).unwrap();
+        assert_eq!(out, vec![r"T:\new".to_string(), r"U:\other".to_string()]);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn normalize_source_drives_item_relativo_sem_leading_sep_passa_como_esta() {
+        let out = normalize_source_drives(vec![r"T:\new".into(), r"src".into()]).unwrap();
+        assert_eq!(out, vec![r"T:\new".to_string(), r"src".to_string()]);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn normalize_source_drives_em_linux_e_no_op() {
+        let input = vec!["/tmp/a".to_string(), "/tmp/b".to_string()];
+        let out = normalize_source_drives(input.clone()).unwrap();
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn build_sem_debug_flag_nao_cria_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().to_str().unwrap();
+        let cfg = Configuration::build(&mut args_iter(&["-s", p, "-d", "/tmp"])).unwrap();
+        assert!(cfg.debug_log().is_none());
+    }
+
+    #[test]
+    fn build_debug_flag_com_path_cria_arquivo_de_log() {
+        let src = tempfile::tempdir().unwrap();
+        let src_p = src.path().to_str().unwrap();
+        let log_dir = tempfile::tempdir().unwrap();
+        let log_path = log_dir.path().join("exp.log");
+        let log_p_str = log_path.to_str().unwrap();
+        let cfg = Configuration::build(&mut args_iter(&[
+            "-s", src_p, "-d", "/tmp", "--debug", log_p_str,
+        ]))
+        .unwrap();
+        assert!(cfg.debug_log().is_some());
+        assert!(log_path.exists(), "arquivo de log deveria ter sido criado");
+    }
+
+    #[test]
+    fn build_debug_flag_com_path_invalido_retorna_erro_io() {
+        let src = tempfile::tempdir().unwrap();
+        let src_p = src.path().to_str().unwrap();
+        let result = Configuration::build(&mut args_iter(&[
+            "-s",
+            src_p,
+            "-d",
+            "/tmp",
+            "--debug",
+            "/definitely/not/a/path/xyz/log.log",
+        ]));
+        assert!(matches!(result, Err(ExportError::Io { .. })));
     }
 }

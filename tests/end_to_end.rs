@@ -1,10 +1,10 @@
 // These end-to-end tests place the temporary `src/` and `dst/` side by side
 // under a single `TempDir`. On Windows, `destination_path` (see `lib.rs`)
-// strips the source drive `Prefix` and joins the remainder onto the
-// destination, and Windows path semantics then collapse the destination's
-// path-after-prefix, making the effective destination coincide with the
-// source — so these assertions only pin meaningful behaviour on non-Windows
-// targets. The `lib::tests` module unit-tests the Windows branch directly.
+// mirrors the source path (minus its drive) under the destination root, so
+// with `src` and `dst` both under `C:\Users\…\TempDir\` the effective
+// destination becomes `dst\Users\…\TempDir\src\…` — the shallow
+// `dst.join("file.prg")` assertions below do not hold there. The
+// `lib::tests` module unit-tests the Windows branch directly.
 #![cfg(not(windows))]
 
 use std::collections::HashSet;

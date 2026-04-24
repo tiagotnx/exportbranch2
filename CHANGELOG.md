@@ -4,6 +4,38 @@ All notable changes to `exportbranch` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project does not
 yet follow strict SemVer.
 
+## [0.1.7] - 2026-04-24
+
+### Added
+- `--debug [PATH]`: opt-in debug log. Captures argv, parsed configuration,
+  each source's canonicalized path and resolved destination, per-source
+  success/failure, and total elapsed time. Each line is prefixed with the
+  milliseconds elapsed since start. If `--debug` is passed without a
+  value, writes to `exportbranch-<unix_secs>.log` in the current
+  directory. Intended for diagnosing field bug reports where reproducing
+  the environment is impractical.
+
+### Fixed
+- **Windows**: `-d` with a path past the drive is now preserved. v0.1.6
+  dropped anything after the drive (Windows path-join semantics), so
+  `exportbranch -s T:\new -d L:\trunk2\` landed files at `L:\new` instead
+  of `L:\trunk2\new`. The destination is now used as a root and the
+  source is mirrored under it (minus its drive): `L:\trunk2\new`,
+  `R:\Trunk2\trunk\frente`, etc. The single-drive case `-d R:\` stays
+  identical to v0.1.6 (`R:\trunk\frente\…`), so wrapper scripts that
+  rely on `-d <drive>:\` do not need to change.
+- **Windows**: items of `-s` without a drive `Prefix` now inherit the
+  drive of the first item. `exportbranch -s T:\new;\src;\include` is
+  equivalent to `-s T:\new;T:\src;T:\include`. Previously the drive-less
+  items failed individually with `MissingDrivePrefix`, silently dropping
+  everything but the first source.
+
+### Changed
+- Windows-only: `destination_path` drops the `RootDir` component from
+  the stripped source before joining onto the destination, so
+  `Path::join` treats the remainder as relative and the destination's
+  path-after-drive is kept intact.
+
 ## [0.1.6] - 2026-04-24
 
 ### Changed
