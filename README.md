@@ -27,6 +27,30 @@ exportbranch -s <source> -d <destination> [options]
 Patterns are matched against the **file name only** and are anchored end-to-end.
 `*.h` matches `foo.h` but **not** `foo.html`.
 
+### Destination layout (Windows)
+
+On Windows, the destination is **always resolved under the drive of `-d`**:
+the source drive `Prefix` (e.g. `L:`, `C:`) is stripped, and the rest of
+the source path is joined onto the destination. Anything you pass after
+the drive in `-d` is discarded — Windows path semantics drop the
+destination's path-after-prefix when the right-hand side of a join has a
+root.
+
+Examples (Windows):
+
+| `-s` | `-d` | Files land under |
+| ---- | ---- | ---------------- |
+| `L:\trunk\frente`  | `R:\`               | `R:\trunk\frente\…`  |
+| `L:\trunk\include` | `R:\anything\else`  | `R:\trunk\include\…` |
+| `C:\ProdutosSG\Branches\Trunk` | `E:\` | `E:\ProdutosSG\Branches\Trunk\…` |
+
+The practical consequence is that a wrapper script can invoke
+`exportbranch` repeatedly with the **same** `-d <drive>:\` and several
+different `-s` roots without the outputs colliding at the drive root —
+each source keeps its own subtree under the destination drive.
+
+On Linux/macOS `-d` is used as-is.
+
 ### Disregarded directories
 
 The directories `bin/`, `lib/` and `programas_externos/conversoes/` (resolved

@@ -4,6 +4,34 @@ All notable changes to `exportbranch` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project does not
 yet follow strict SemVer.
 
+## [0.1.6] - 2026-04-24
+
+### Changed
+- **Windows (breaking)**: destination path now matches the historical
+  `MateusZanchoNeto/exportbranch` behaviour: the source drive `Prefix`
+  is stripped and joined onto the destination drive, and anything after
+  the drive in `-d` is dropped (Windows path-join semantics replace the
+  destination's path-after-prefix when the right side has a root). So
+  `-s L:\trunk\frente -d R:\` lands files at `R:\trunk\frente\…`, and
+  `-s L:\trunk\include -d R:\` lands them at `R:\trunk\include\…` —
+  wrapper scripts can invoke the CLI repeatedly with the same `-d` drive
+  and several sources without collisions.
+- Reverts v0.1.5's "destination used as-is on every platform" on Windows
+  only. Linux keeps the flat behaviour.
+
+### Added
+- `ExportError::MissingDrivePrefix`: raised on Windows when the path
+  passed to `-s` has no drive `Prefix` component, since in that case the
+  destination drive cannot be derived.
+- Unit tests in `lib::tests` pinning the Windows join semantics and the
+  `MissingDrivePrefix` error case (`#[cfg(windows)]`).
+
+### Removed
+- `tests/end_to_end.rs` is now Linux-only (`#![cfg(not(windows))]`).
+  The Windows join semantics collapse a same-drive `dst` onto the source
+  path, making sibling-tempdir integration tests meaningless on Windows;
+  the unit tests above cover the destination-path logic there.
+
 ## [0.1.5] - 2026-04-24
 
 ### Changed

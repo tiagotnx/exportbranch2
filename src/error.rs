@@ -23,6 +23,9 @@ pub enum ExportError {
         path: PathBuf,
         source: io::Error,
     },
+    /// Source path lacks a Windows drive `Prefix` component, so the
+    /// destination drive cannot be derived. Only emitted on Windows.
+    MissingDrivePrefix(PathBuf),
 }
 
 /// `Result` alias defaulting to [`ExportError`].
@@ -47,6 +50,13 @@ impl fmt::Display for ExportError {
                     "failed to read metadata for {}: {}",
                     path.display(),
                     source
+                )
+            }
+            ExportError::MissingDrivePrefix(path) => {
+                write!(
+                    f,
+                    "source path has no drive prefix (e.g. `C:\\`): {}",
+                    path.display()
                 )
             }
         }
