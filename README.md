@@ -46,6 +46,65 @@ defaults for that source:
 
 Each file lists patterns separated by `;`.
 
+## Antivirus / Windows Defender
+
+Real-time scanning inspects every read and write the tool performs, and on
+large trees this dominates the wall-clock time (hundreds of thousands of
+syscalls on a full branch). Two narrow exclusions bring the exporter back
+to near-disk speed while leaving the rest of the machine protected.
+
+All commands below must be run in PowerShell **as Administrator**.
+
+### Option 1 — exclude the source and destination folders
+
+Most effective. Pick the roots you actually hand to `-s` and `-d`; adapt
+the paths below.
+
+```powershell
+Add-MpPreference -ExclusionPath "C:\ProdutosSG\Branches"
+Add-MpPreference -ExclusionPath "E:\Trunk"
+```
+
+Verify:
+
+```powershell
+Get-MpPreference | Select-Object -ExpandProperty ExclusionPath
+```
+
+Undo:
+
+```powershell
+Remove-MpPreference -ExclusionPath "C:\ProdutosSG\Branches"
+Remove-MpPreference -ExclusionPath "E:\Trunk"
+```
+
+### Option 2 — exclude the `exportbranch.exe` process
+
+Narrower than option 1: the binary is skipped by real-time scanning, but
+any other process touching the same files (editors, IDEs, compilers)
+remains fully protected.
+
+```powershell
+Add-MpPreference -ExclusionProcess "exportbranch.exe"
+```
+
+Verify:
+
+```powershell
+Get-MpPreference | Select-Object -ExpandProperty ExclusionProcess
+```
+
+Undo:
+
+```powershell
+Remove-MpPreference -ExclusionProcess "exportbranch.exe"
+```
+
+Combining both options gives the best throughput. Scheduled scans,
+cloud-delivered protection, and SmartScreen on downloads remain active in
+every case — only the real-time, per-syscall inspection of the configured
+paths/process is bypassed.
+
 ## Building
 
 1. [Install Rust](https://www.rust-lang.org/tools/install)

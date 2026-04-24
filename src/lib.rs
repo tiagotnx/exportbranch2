@@ -59,7 +59,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
 
 fn export(source: &str, destination: &str, configuration: &Configuration) -> Result<()> {
     let source_path_buffer = source_path(source)?;
-    let destination_path_buffer = destination_path(&source_path_buffer, destination);
+    let destination_path_buffer = Path::new(destination).to_path_buf();
     let mut file_checker = FileChecker::new(destination_path_buffer.clone());
     let mut export = ExportBranch::build(
         source_path_buffer,
@@ -73,30 +73,6 @@ fn export(source: &str, destination: &str, configuration: &Configuration) -> Res
 
 fn source_path(source: &str) -> Result<PathBuf> {
     Path::new(source).canonicalize().with_path(source)
-}
-
-/// On Windows, mirror the canonical source path under `destination` so a
-/// source like `L:\trunk\include` lands at `<destination>\trunk\include`.
-/// We strip both `Prefix` (drive / `\\?\` UNC) and `RootDir` (the leading
-/// `\`) — without removing `RootDir` the result becomes drive-relative and
-/// `PathBuf::push` would silently discard `destination`.
-///
-/// On other platforms `destination` is used as-is.
-#[cfg(windows)]
-fn destination_path(canonical_source: &Path, destination: &str) -> PathBuf {
-    use std::path::Component;
-
-    let relative: PathBuf = canonical_source
-        .components()
-        .filter(|c| !matches!(c, Component::Prefix(_) | Component::RootDir))
-        .map(Component::as_os_str)
-        .collect();
-    Path::new(destination).join(relative)
-}
-
-#[cfg(not(windows))]
-fn destination_path(_canonical_source: &Path, destination: &str) -> PathBuf {
-    Path::new(destination).to_path_buf()
 }
 
 fn print_time_elapsed(timer: Instant) {

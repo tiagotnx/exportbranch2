@@ -4,6 +4,27 @@ All notable changes to `exportbranch` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project does not
 yet follow strict SemVer.
 
+## [0.1.5] - 2026-04-24
+
+### Changed
+- **Windows (breaking)**: destination path is used as-is on every platform;
+  the canonical source is no longer mirrored underneath it. Previously,
+  exporting `C:\ProdutosSG\Branches\Trunk` to `E:\Trunk` produced
+  `E:\Trunk\ProdutosSG\Branches\Trunk\...`; it now produces `E:\Trunk\...`,
+  matching Linux semantics and the intent of the `-d` flag. Reverts the
+  v0.1.3 mirror behaviour.
+- End-to-end tests simplified: `dest_root_for` helper removed, all
+  assertions reference `dst` directly. A dedicated regression test pins
+  the flat-destination contract so the behaviour is not flipped again.
+
+### Added
+- README section explaining how to reduce Windows Defender real-time
+  scanning overhead on large branches: folder exclusions via
+  `Add-MpPreference -ExclusionPath` for the source/destination roots, and
+  a narrower process exclusion via `Add-MpPreference -ExclusionProcess`
+  for `exportbranch.exe`. Real-time scanning is the main source of
+  wall-clock overhead on large exports.
+
 ## [0.1.4] - 2026-04-22
 
 ### Fixed
