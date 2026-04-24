@@ -91,6 +91,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ steps.tag.outputs.name }}" dist/* \
-            --repo "${{ github.repository }}" \
+          tag="${{ steps.tag.outputs.name }}"
+          repo="${{ github.repository }}"
+          # `gh release upload` requires the release to exist; create it on
+          # first run so pushing a tag is enough to produce a release. A
+          # `workflow_dispatch` back-fill against an existing release is a
+          # no-op here and falls through to `upload --clobber`.
+          gh release view "$tag" --repo "$repo" >/dev/null 2>&1 \
+            || gh release create "$tag" \
+                 --repo "$repo" \
+                 --verify-tag \
+                 --title "$tag" \
+                 --notes "Automated release for $tag."
+          gh release upload "$tag" dist/* \
+            --repo "$repo" \
             --clobber
