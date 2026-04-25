@@ -36,6 +36,7 @@ pub mod file_checker;
 pub use error::{ExportError, Result, WithPath};
 
 use configuration::Configuration;
+use export::ExportStats;
 use export_branch::ExportBranch;
 use file_checker::FileChecker;
 use std::path::Path;
@@ -47,6 +48,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let timer = Instant::now();
     let argv_snapshot = args.clone();
     let configuration = Configuration::build(&mut args.into_iter())?;
+
+    if let Some(shell) = configuration.completions() {
+        Configuration::emit_completions(shell, &mut std::io::stdout());
+        return Ok(());
+    }
 
     let log = configuration.debug_log();
     debug_log!(log, "exportbranch {}", env!("CARGO_PKG_VERSION"));
@@ -61,10 +67,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
     );
     debug_log!(
         log,
-        "flags: exists={} reload={} lower={}",
+        "flags: exists={} reload={} lower={} quiet={}",
         configuration.exists(),
         configuration.reload(),
-        configuration.lower()
+        configuration.lower(),
+        configuration.quiet()
     );
     debug_log!(
         log,
@@ -74,18 +81,29 @@ pub fn run(args: Vec<String>) -> Result<()> {
 
     configuration.print();
 
+    let mut totals = ExportStats::default();
     for source in configuration.source() {
         for destination in configuration.destination() {
-            export(source, destination, &configuration)?;
+            let stats = export(source, destination, &configuration)?;
+            totals = totals.merge(stats);
         }
     }
 
-    debug_log!(log, "finished in {} secs", timer.elapsed().as_secs());
-    print_time_elapsed(timer);
+    debug_log!(
+        log,
+        "finished in {} secs · {} converted, {} copied, {} skipped",
+        timer.elapsed().as_secs(),
+        totals.converted,
+        totals.copied,
+        totals.skipped
+    );
+    if !configuration.quiet() {
+        eprintln!("{}", format_done(timer.elapsed(), totals));
+    }
     Ok(())
 }
 
-fn export(source: &str, destination: &str, configuration: &Configuration) -> Result<()> {
+fn export(source: &str, destination: &str, configuration: &Configuration) -> Result<ExportStats> {
     let log = configuration.debug_log();
     debug_log!(log, "export start: -s {source:?} -d {destination:?}");
     let source_path_buffer = source_path(source)?;
@@ -102,7 +120,13 @@ fn export(source: &str, destination: &str, configuration: &Configuration) -> Res
 
     let result = export.perform_exporting();
     match &result {
-        Ok(()) => debug_log!(log, "export ok: -s {source:?} -d {destination:?}"),
+        Ok(stats) => debug_log!(
+            log,
+            "export ok: -s {source:?} -d {destination:?} · {} converted, {} copied, {} skipped",
+            stats.converted,
+            stats.copied,
+            stats.skipped
+        ),
         Err(e) => debug_log!(log, "export failed: -s {source:?} -d {destination:?}: {e}"),
     }
     result
@@ -155,16 +179,42 @@ fn destination_path(_raw_source: &str, destination: &str) -> Result<PathBuf> {
     Ok(Path::new(destination).to_path_buf())
 }
 
-fn print_time_elapsed(timer: Instant) {
-    println!(
-        "\r\n--------------------------\r\nTime elapsed: {:?} secs",
-        timer.elapsed().as_secs()
-    );
+fn format_done(elapsed: std::time::Duration, stats: ExportStats) -> String {
+    format!(
+        "Done in {}s · {} files: {} converted, {} copied, {} skipped",
+        elapsed.as_secs(),
+        stats.total(),
+        stats.converted,
+        stats.copied,
+        stats.skipped
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_done_imprime_segundos_e_resumo_de_stats() {
+        let stats = ExportStats {
+            converted: 897,
+            copied: 337,
+            skipped: 156,
+        };
+        assert_eq!(
+            format_done(std::time::Duration::from_secs(4), stats),
+            "Done in 4s · 1390 files: 897 converted, 337 copied, 156 skipped"
+        );
+    }
+
+    #[test]
+    fn format_done_zera_quando_sem_arquivos() {
+        let stats = ExportStats::default();
+        assert_eq!(
+            format_done(std::time::Duration::from_secs(0), stats),
+            "Done in 0s · 0 files: 0 converted, 0 copied, 0 skipped"
+        );
+    }
 
     #[test]
     #[cfg(not(windows))]

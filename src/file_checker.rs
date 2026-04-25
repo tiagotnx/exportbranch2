@@ -1,10 +1,9 @@
 #![allow(missing_docs)]
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Result;
-use std::io::{Read, Write};
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,11 +17,14 @@ pub enum FileStatus {
 pub struct FileUpdate {
     pub path: PathBuf,
     pub modified: SystemTime,
+    /// True when the file was a byte-for-byte copy (matched `only_copy`),
+    /// false when it went through CP850 → ASCII conversion.
+    pub only_copy: bool,
 }
 
 pub struct FileChecker {
     directory: PathBuf,
-    files: HashMap<String, u128>,
+    files: HashMap<PathBuf, u128>,
 }
 
 impl FileChecker {
@@ -37,8 +39,7 @@ impl FileChecker {
         match FileChecker::get_modified(file) {
             Ok(system_time) => {
                 let current = to_nanos(system_time);
-                let key = file.to_string_lossy();
-                match self.files.get(key.as_ref()) {
+                match self.files.get(file) {
                     Some(&stored) if stored == current => FileStatus::UpToDate,
                     _ => FileStatus::Modified(system_time),
                 }
@@ -48,18 +49,16 @@ impl FileChecker {
     }
 
     pub fn save(&self) -> Result<()> {
-        let mut file = FileChecker::get_file(&self.directory)?;
-        let mut contents = String::new();
-
-        for (file_name, nanos) in &self.files {
-            let _ = writeln!(contents, "{file_name};{nanos}");
+        let file = FileChecker::get_file(&self.directory)?;
+        let mut writer = BufWriter::with_capacity(64 * 1024, file);
+        for (path, nanos) in &self.files {
+            writeln!(writer, "{};{nanos}", path.display())?;
         }
-        file.write_all(contents.as_bytes())
+        writer.flush()
     }
 
     pub fn add_file(&mut self, file: &Path, system_time: SystemTime) {
-        self.files
-            .insert(file.to_string_lossy().into_owned(), to_nanos(system_time));
+        self.files.insert(file.to_path_buf(), to_nanos(system_time));
     }
 
     pub fn force_update(&self, file: &Path) -> FileStatus {
@@ -119,7 +118,7 @@ impl FileChecker {
             // and are skipped — the file will be re-exported once on next
             // run and then re-saved in the new format.
             if let Ok(nanos) = file_metadata.parse::<u128>() {
-                files.insert(file_name.to_string(), nanos);
+                files.insert(PathBuf::from(file_name), nanos);
             }
         }
         FileChecker { directory, files }
@@ -151,8 +150,11 @@ mod tests {
         let legacy = "/some/path;SystemTime { tv_sec: 100, tv_nsec: 0 }\n\
                       /other/path;123456789\n";
         let checker = FileChecker::build(dir.path().to_path_buf(), legacy);
-        assert_eq!(checker.files.get("/other/path"), Some(&123_456_789u128));
-        assert!(!checker.files.contains_key("/some/path"));
+        assert_eq!(
+            checker.files.get(Path::new("/other/path")),
+            Some(&123_456_789u128)
+        );
+        assert!(!checker.files.contains_key(Path::new("/some/path")));
     }
 
     #[test]
@@ -170,7 +172,19 @@ mod tests {
         checker.save().unwrap();
 
         let reloaded = FileChecker::new(dir.path().to_path_buf());
-        let key = fake_file.to_string_lossy().into_owned();
-        assert_eq!(reloaded.files.get(&key), Some(&42_000_000_000u128));
+        assert_eq!(reloaded.files.get(&fake_file), Some(&42_000_000_000u128));
+    }
+
+    #[test]
+    fn check_usa_path_diretamente_sem_realocar_string() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake_file = dir.path().join("bar.prg");
+        std::fs::write(&fake_file, b"x").unwrap();
+
+        let mut checker = FileChecker::default(dir.path().to_path_buf());
+        let t = std::fs::metadata(&fake_file).unwrap().modified().unwrap();
+        checker.add_file(&fake_file, t);
+
+        assert!(matches!(checker.check(&fake_file), FileStatus::UpToDate));
     }
 }

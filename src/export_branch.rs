@@ -2,7 +2,7 @@
 
 use crate::configuration::Configuration;
 use crate::error::{Result, WithPath};
-use crate::export::{export, WalkContext};
+use crate::export::{export, ExportStats, WalkContext};
 use crate::export_branch_files::check_configuration_file;
 use crate::file_checker::FileChecker;
 use std::path::PathBuf;
@@ -29,7 +29,7 @@ impl<'a> ExportBranch<'a> {
         }
     }
 
-    pub fn perform_exporting(&mut self) -> Result<()> {
+    pub fn perform_exporting(&mut self) -> Result<ExportStats> {
         let (file_filters, only_copy_files) = check_configuration_file(
             &self.source,
             self.configuration.file_filters(),
@@ -37,7 +37,7 @@ impl<'a> ExportBranch<'a> {
         )?;
         let destination = self.destination.clone();
 
-        let updates = {
+        let outcome = {
             let ctx = WalkContext {
                 destination_root: &self.destination,
                 configuration: self.configuration,
@@ -48,12 +48,12 @@ impl<'a> ExportBranch<'a> {
             export(&ctx, &self.source, destination)?
         };
 
-        for update in &updates {
+        for update in &outcome.updates {
             self.file_checker.apply(update);
         }
 
         let checker_dir = self.file_checker.directory().to_path_buf();
         self.file_checker.save().with_path(checker_dir)?;
-        Ok(())
+        Ok(outcome.stats)
     }
 }

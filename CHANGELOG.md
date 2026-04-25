@@ -4,6 +4,66 @@ All notable changes to `exportbranch` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project does not
 yet follow strict SemVer.
 
+## [0.1.8] - 2026-04-25
+
+### Added
+- `-q`, `--quiet`: suppress all non-error output. Useful in scripts and CI;
+  conflicts with `--show`.
+- `--completions <SHELL>`: emit a shell completion script for `bash`, `zsh`,
+  `fish`, `powershell` or `elvish`. Skips `-s`/`-d` validation so it can be
+  invoked standalone.
+- `--version` is now enriched with the short git SHA and commit date
+  captured at build time (e.g. `exportbranch 0.1.8 (a1b2c3d, 2026-04-25)`),
+  so support tickets can pinpoint the exact build. Falls back to
+  `unknown` when built outside a git checkout.
+- End-of-run summary line: `Done in Ns · X files: Y converted, Z copied,
+  W skipped`. Backed by `ExportStats` aggregated through the parallel
+  walk via `try_reduce`.
+- `benches/walk.rs`: end-to-end criterion bench for the directory walk
+  (cold + warm). Lets us catch regressions in the syscall/HashMap path,
+  which dominates many-small-files workloads.
+
+### Changed
+- **Output**: per-file lines collapsed from 3 to 1 (`convert SRC → DST`,
+  `copy    SRC → DST`). Status moved entirely to **stderr** so stdout is
+  free for piping. Banner trimmed to `source = …`, `destination = …`,
+  `Exporting…`. The `\r\n` literals are gone (no more `^M` on Linux
+  terminals).
+- `--show` no longer prints filters/only-copy/flags when they equal the
+  built-in defaults — only customised entries surface.
+- `FileUpdate` carries `only_copy: bool` so the summary can split
+  `converted` from `copied`.
+- `export()` returns `ExportOutcome { updates, stats }` instead of
+  `Vec<FileUpdate>`. `ExportBranch::perform_exporting` returns the
+  aggregated `ExportStats` for the caller to fold.
+
+### Performance
+- Walk: replaced per-entry `is_dir()`/`is_file()` (two `stat` syscalls)
+  with `DirEntry::file_type()` (no extra syscall on most filesystems),
+  and dropped the `exists()` check before `create_dir_all`. Both
+  measurably reduce syscall traffic on dense trees.
+- `FileChecker`: keys are now `PathBuf` instead of `String`, eliminating
+  the `to_string_lossy().into_owned()` allocation per file. Persisted
+  format is unchanged — existing metadata files round-trip.
+- `convert_file`: `BufReader`/`BufWriter` capacity bumped to 64 KB,
+  reducing write syscalls on large `.a`/`.so` payloads.
+- `convert_stream`: scratch buffers reused across calls via
+  `thread_local!` (`buf`, `scratch`, `out`), avoiding ~256 KB of `Vec`
+  allocation per file in the parallel walk.
+- `walk_warm` bench (5000 UpToDate files, WSL2): ~6.6 ms.
+
+### CI / build
+- New `.cargo/config.toml` pins `rustflags = ["-C", "target-cpu=x86-64"]`
+  so release binaries stay compatible with Intel Core i3/i5 3rd-gen
+  (Ivy Bridge) and similar CPUs without AVX2/BMI/FMA. AVX2 codepaths
+  inside `regex`/`aho-corasick`/`memchr` continue to light up at runtime
+  via `is_x86_feature_detected!` on newer hardware.
+- `build.rs`: captures `GIT_SHA` and `GIT_DATE` for `--version`. No new
+  dependencies; falls back gracefully outside a git checkout.
+
+### Dependencies
+- Added `clap_complete = "4"` (direct) for shell completions.
+
 ## [0.1.7] - 2026-04-24
 
 ### Added

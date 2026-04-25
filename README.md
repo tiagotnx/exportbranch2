@@ -10,18 +10,66 @@ exportbranch -s <source> -d <destination> [options]
 
 ### Options
 
-| Flag                 | Description                                                                |
-| -------------------- | -------------------------------------------------------------------------- |
-| `-s <source>`        | Source path (use `;` to separate multiple paths).                          |
-| `-d <destination>`   | Destination path (use `;` to separate multiple paths).                     |
-| `-c <only_copy>`     | Glob patterns copied byte-for-byte (no CP850 conversion).                  |
-| `-f <file_filters>`  | Glob patterns selected for export.                                         |
-| `--exists`           | Force re-export when the destination copy is missing.                      |
-| `--md5`              | **Deprecated** alias of `--exists`; will be removed in a future release.   |
-| `--reload`           | Re-export all files, ignoring the modification tracker.                    |
-| `--lower`            | Lowercase directory and file names under the destination.                  |
-| `--show`             | Print the parsed configuration before exporting.                           |
-| `--debug [PATH]`     | Write a debug log to `PATH` (default: `exportbranch-<unix_secs>.log`).     |
+| Flag                    | Description                                                                |
+| ----------------------- | -------------------------------------------------------------------------- |
+| `-s <source>`           | Source path (use `;` to separate multiple paths).                          |
+| `-d <destination>`      | Destination path (use `;` to separate multiple paths).                     |
+| `-c <only_copy>`        | Glob patterns copied byte-for-byte (no CP850 conversion).                  |
+| `-f <file_filters>`     | Glob patterns selected for export.                                         |
+| `--exists`              | Force re-export when the destination copy is missing.                      |
+| `--md5`                 | **Deprecated** alias of `--exists`; will be removed in a future release.   |
+| `--reload`              | Re-export all files, ignoring the modification tracker.                    |
+| `--lower`               | Lowercase directory and file names under the destination.                  |
+| `--show`                | Print extra (non-default) configuration entries before exporting.          |
+| `-q`, `--quiet`         | Suppress all non-error output (Unix-style); errors still go to stderr.     |
+| `--debug [PATH]`        | Write a debug log to `PATH` (default: `exportbranch-<unix_secs>.log`).     |
+| `--completions <SHELL>` | Generate a shell completion script and exit. See [Completions](#shell-completions). |
+| `--version`             | Print version, git SHA and build commit date.                              |
+| `--help`                | Print help.                                                                |
+
+### Output
+
+All status goes to **stderr**, leaving stdout free for piping. Each file
+shows on a single line. The run finishes with a one-line summary:
+
+```
+source       = L:\trunk
+destination  = R:\
+Exporting...
+convert L:\trunk\frente\foo.prg → R:\trunk\frente\foo.prg
+copy    L:\trunk\frente\libfoo.a → R:\trunk\frente\libfoo.a
+Done in 4s · 1234 files: 897 converted, 337 copied, 156 skipped (UpToDate)
+```
+
+`--quiet` silences everything except errors:
+
+```
+exportbranch -s L:\trunk -d R:\ -q   # success ⇒ no output, exit 0
+```
+
+### Shell completions
+
+Generate a completion script for your shell and source it once:
+
+```bash
+# bash
+exportbranch --completions bash > /etc/bash_completion.d/exportbranch
+
+# zsh
+exportbranch --completions zsh > "${fpath[1]}/_exportbranch"
+
+# fish
+exportbranch --completions fish > ~/.config/fish/completions/exportbranch.fish
+```
+
+PowerShell:
+
+```powershell
+exportbranch --completions powershell | Out-String | Invoke-Expression
+# add the same line to $PROFILE to persist
+```
+
+Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`.
 
 ### Globs
 

@@ -1,0 +1,14 @@
+# Release binaries are distributed and must run on Intel Core i3/i5 3rd-gen
+# (Ivy Bridge, ~2012) and similar older CPUs. The default `x86-64` target-cpu
+# (a.k.a. x86-64-v1 — SSE2 baseline) is the safest choice and runs on every
+# x86_64 CPU ever shipped, including the oldest target hardware.
+#
+# Do NOT change this to `native`, `x86-64-v3`, `haswell`, or anything that
+# implies AVX2/BMI/FMA/F16C — those instructions do not exist on Ivy Bridge
+# and the binary will crash with "Illegal Instruction" on the user's machine.
+#
+# `regex` and `aho-corasick` already do runtime CPU feature detection, so
+# AVX2/SSE4.2 codepaths inside those crates light up automatically on newer
+# CPUs without us needing to bake them in at compile time.
+[build]
+rustflags = ["-C", "target-cpu=x86-64"]

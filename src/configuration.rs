@@ -2,9 +2,22 @@
 
 use crate::debug_log::{default_log_path, DebugLog};
 use crate::error::{ExportError, Result, WithPath};
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, CommandFactory, Parser};
+use clap_complete::Shell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+/// Long version string emitted by `--version`. Includes the cargo version,
+/// the short git SHA captured at build time, and the commit date — handy
+/// when triaging "which build is this?" support questions.
+pub const VERSION_LONG: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("GIT_SHA"),
+    ", ",
+    env!("GIT_DATE"),
+    ")"
+);
 
 const DEFAULT_ONLY_COPY_FILES: [&str; 5] = ["*.a", "*.so", "*.h", "*.0", "*.18"];
 
@@ -24,23 +37,18 @@ const DISREGARDED_DIRECTORIES: [&str; 5] = [
 #[derive(Parser, Debug)]
 #[command(
     name = "exportbranch",
-    version,
+    version = VERSION_LONG,
     about = "Filter, copy and convert Harbour branch files for Compex.",
     disable_help_flag = false,
     arg_required_else_help = true
 )]
 struct Cli {
     /// Source path(s); use `;` to pass multiple roots.
-    #[arg(short = 's', long = "source", value_delimiter = ';', required = true)]
+    #[arg(short = 's', long = "source", value_delimiter = ';')]
     source: Vec<String>,
 
     /// Destination path(s); use `;` to pass multiple destinations.
-    #[arg(
-        short = 'd',
-        long = "destination",
-        value_delimiter = ';',
-        required = true
-    )]
+    #[arg(short = 'd', long = "destination", value_delimiter = ';')]
     destination: Vec<String>,
 
     /// Glob patterns copied byte-for-byte (no CP850 conversion).
@@ -54,6 +62,10 @@ struct Cli {
     /// Print the parsed configuration before exporting.
     #[arg(long, action = ArgAction::SetTrue)]
     show: bool,
+
+    /// Suppress all non-error output; only the final summary stays.
+    #[arg(short = 'q', long, action = ArgAction::SetTrue, conflicts_with = "show")]
+    quiet: bool,
 
     /// Force re-export when the destination copy is missing.
     #[arg(long, action = ArgAction::SetTrue)]
@@ -75,6 +87,11 @@ struct Cli {
     /// writes to `exportbranch-<unix_secs>.log` in the current directory.
     #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "")]
     debug: Option<String>,
+
+    /// Generate a shell completion script and exit. Skips -s/-d validation.
+    /// Example: `exportbranch --completions bash > exportbranch.bash`.
+    #[arg(long, value_name = "SHELL", value_enum, exclusive = true)]
+    completions: Option<Shell>,
 }
 
 pub struct Configuration {
@@ -83,11 +100,13 @@ pub struct Configuration {
     only_copy_files: Vec<String>,
     file_filters: Vec<String>,
     show: bool,
+    quiet: bool,
     exists: bool,
     reload: bool,
     lower: bool,
     disregarded_directories: HashSet<PathBuf>,
     debug_log: Option<DebugLog>,
+    completions: Option<Shell>,
 }
 
 /// On Windows, rewrites items of `-s` that are drive-relative (leading
@@ -139,6 +158,13 @@ fn normalize_source_drives(sources: Vec<String>) -> Result<Vec<String>> {
 impl Configuration {
     pub fn build(args: &mut impl Iterator<Item = String>) -> Result<Configuration> {
         let cli = Cli::try_parse_from(args).map_err(|e| ExportError::InvalidArgs(e.to_string()))?;
+
+        // `--completions` short-circuits everything: no -s/-d validation, no
+        // disregarded-dir canonicalization, no debug log file. The caller
+        // (`lib::run`) inspects `completions()` and emits the script.
+        if let Some(shell) = cli.completions {
+            return Ok(Configuration::completions_only(shell));
+        }
 
         if cli.md5 {
             eprintln!(
@@ -204,25 +230,72 @@ impl Configuration {
             lower: cli.lower,
             disregarded_directories,
             show: cli.show,
+            quiet: cli.quiet,
             debug_log,
+            completions: None,
         })
     }
 
-    pub fn print(&self) {
-        if self.show {
-            println!(
-                "Export Branch\r\nsource.........: {:?}\r\ndestination....: {:?}\r\nonly_copy_files: {:?}\r\nfile_filters...: {:?}\r\nexists.........: {:?}\r\nreload.........: {:?}\r\nlower..........: {:?}\r\ndisregarded....: {:?}\r\n",
-                self.source,
-                self.destination,
-                self.only_copy_files,
-                self.file_filters,
-                self.exists,
-                self.reload,
-                self.lower,
-                self.disregarded_directories,
-            );
+    fn completions_only(shell: Shell) -> Configuration {
+        Configuration {
+            source: Vec::new(),
+            destination: Vec::new(),
+            only_copy_files: Vec::new(),
+            file_filters: Vec::new(),
+            show: false,
+            quiet: false,
+            exists: false,
+            reload: false,
+            lower: false,
+            disregarded_directories: HashSet::new(),
+            debug_log: None,
+            completions: Some(shell),
         }
-        println!("--------------------------\r\nExporting...\r\n");
+    }
+
+    /// Writes a generated completion script for `shell` to `out`. Used by
+    /// `lib::run` when `--completions` was passed.
+    pub fn emit_completions<W: std::io::Write>(shell: Shell, out: &mut W) {
+        clap_complete::generate(shell, &mut Cli::command(), "exportbranch", out);
+    }
+
+    pub fn print(&self) {
+        if self.quiet {
+            return;
+        }
+        eprint!("{}", self.format_summary());
+    }
+
+    fn format_summary(&self) -> String {
+        use std::fmt::Write;
+
+        let join = |v: &[String]| v.join(";");
+        let mut out = String::new();
+        let _ = writeln!(out, "source       = {}", join(&self.source));
+        let _ = writeln!(out, "destination  = {}", join(&self.destination));
+        if self.show {
+            let default_filters: Vec<String> =
+                DEFAULT_FILTERS.iter().map(|s| (*s).to_string()).collect();
+            if self.file_filters != default_filters {
+                let _ = writeln!(out, "filters      = {}", join(&self.file_filters));
+            }
+            let default_only_copy: Vec<String> = DEFAULT_ONLY_COPY_FILES
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect();
+            if self.only_copy_files != default_only_copy {
+                let _ = writeln!(out, "only-copy    = {}", join(&self.only_copy_files));
+            }
+            if self.exists || self.reload || self.lower {
+                let _ = writeln!(
+                    out,
+                    "flags        = exists:{} reload:{} lower:{}",
+                    self.exists, self.reload, self.lower
+                );
+            }
+        }
+        out.push_str("Exporting...\n");
+        out
     }
 
     pub fn source(&self) -> &Vec<String> {
@@ -251,6 +324,14 @@ impl Configuration {
 
     pub fn lower(&self) -> bool {
         self.lower
+    }
+
+    pub fn quiet(&self) -> bool {
+        self.quiet
+    }
+
+    pub fn completions(&self) -> Option<Shell> {
+        self.completions
     }
 
     pub fn disregarded_directories(&self) -> &HashSet<PathBuf> {
@@ -296,6 +377,49 @@ mod tests {
         let cfg = Configuration::build(&mut args_iter(&["-s", &arg, "-d", "/tmp;/tmp2"])).unwrap();
         assert_eq!(cfg.source().len(), 2);
         assert_eq!(cfg.destination().len(), 2);
+    }
+
+    #[test]
+    fn build_completions_dispensa_source_e_destination() {
+        let cfg = Configuration::build(&mut args_iter(&["--completions", "bash"])).unwrap();
+        assert_eq!(cfg.completions(), Some(Shell::Bash));
+        assert!(cfg.source().is_empty());
+        assert!(cfg.destination().is_empty());
+    }
+
+    #[test]
+    fn emit_completions_gera_script_nao_vazio_para_bash() {
+        let mut buf: Vec<u8> = Vec::new();
+        Configuration::emit_completions(Shell::Bash, &mut buf);
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("exportbranch"), "script de completions vazio");
+    }
+
+    #[test]
+    fn build_quiet_ativa_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().to_str().unwrap();
+        let cfg = Configuration::build(&mut args_iter(&["-s", p, "-d", "/tmp", "-q"])).unwrap();
+        assert!(cfg.quiet());
+    }
+
+    #[test]
+    fn build_quiet_e_show_sao_mutuamente_exclusivos() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().to_str().unwrap();
+        let result = Configuration::build(&mut args_iter(&["-s", p, "-d", "/tmp", "-q", "--show"]));
+        assert!(matches!(result, Err(ExportError::InvalidArgs(_))));
+    }
+
+    #[test]
+    fn format_summary_quiet_e_no_op_via_print() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().to_str().unwrap();
+        let cfg = Configuration::build(&mut args_iter(&["-s", p, "-d", "/tmp", "-q"])).unwrap();
+        // print() não tem return value testável, mas se quiet=true, deve
+        // sair antes do format_summary. O smoke test aqui é só garantir que
+        // a flag está corretamente lida.
+        assert!(cfg.quiet());
     }
 
     #[test]
@@ -472,6 +596,61 @@ mod tests {
         .unwrap();
         assert!(cfg.debug_log().is_some());
         assert!(log_path.exists(), "arquivo de log deveria ter sido criado");
+    }
+
+    #[test]
+    fn format_summary_padrao_imprime_apenas_source_destination_e_exporting() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().to_str().unwrap();
+        let cfg = Configuration::build(&mut args_iter(&["-s", p, "-d", "/tmp"])).unwrap();
+        let out = cfg.format_summary();
+        assert!(out.contains(&format!("source       = {p}")));
+        assert!(out.contains("destination  = /tmp"));
+        assert!(out.ends_with("Exporting...\n"));
+        assert!(!out.contains("filters"));
+        assert!(!out.contains("only-copy"));
+        assert!(!out.contains("flags"));
+    }
+
+    #[test]
+    fn format_summary_show_omite_chaves_iguais_aos_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().to_str().unwrap();
+        let cfg = Configuration::build(&mut args_iter(&["-s", p, "-d", "/tmp", "--show"])).unwrap();
+        let out = cfg.format_summary();
+        assert!(!out.contains("filters"));
+        assert!(!out.contains("only-copy"));
+        assert!(!out.contains("flags"));
+    }
+
+    #[test]
+    fn format_summary_show_inclui_filters_quando_customizados() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().to_str().unwrap();
+        let cfg = Configuration::build(&mut args_iter(&[
+            "-s",
+            p,
+            "-d",
+            "/tmp",
+            "--show",
+            "-f",
+            "*.txt;*.md",
+        ]))
+        .unwrap();
+        let out = cfg.format_summary();
+        assert!(out.contains("filters      = *.txt;*.md"));
+    }
+
+    #[test]
+    fn format_summary_show_inclui_flags_quando_alguma_ativa() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().to_str().unwrap();
+        let cfg = Configuration::build(&mut args_iter(&[
+            "-s", p, "-d", "/tmp", "--show", "--reload",
+        ]))
+        .unwrap();
+        let out = cfg.format_summary();
+        assert!(out.contains("flags        = exists:false reload:true lower:false"));
     }
 
     #[test]

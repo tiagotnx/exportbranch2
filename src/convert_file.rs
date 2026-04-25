@@ -1,18 +1,27 @@
 #![allow(missing_docs)]
 
 use crate::convertions::{BYTE_MAP, MULTIBYTE};
+use std::cell::RefCell;
 use std::fs;
 use std::io::{BufReader, BufWriter, Read, Result, Write};
 use std::path::Path;
 
+thread_local! {
+    /// Per-thread scratch buffers reused across `convert_stream` calls so the
+    /// parallel walk doesn't allocate ~256 KB of `Vec` per file converted.
+    static CONVERT_SCRATCH: RefCell<(Vec<u8>, Vec<u8>, Vec<u8>)> =
+        const { RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
+}
+
 const STREAM_CHUNK: usize = 64 * 1024;
+const IO_BUFFER: usize = 64 * 1024;
 
 pub fn convert_file(entry_path: &Path, dest_path: &Path) -> Result<()> {
     let tmp_path = tmp_destination(dest_path);
     let source = fs::File::open(entry_path)?;
     let dest = fs::File::create(&tmp_path)?;
-    let mut reader = BufReader::new(source);
-    let mut writer = BufWriter::new(dest);
+    let mut reader = BufReader::with_capacity(IO_BUFFER, source);
+    let mut writer = BufWriter::with_capacity(IO_BUFFER, dest);
     if let Err(e) =
         convert_stream(&mut reader, &mut writer, STREAM_CHUNK).and_then(|()| writer.flush())
     {
@@ -44,21 +53,39 @@ pub fn convert_stream<R: Read, W: Write>(
     writer: &mut W,
     chunk_size: usize,
 ) -> Result<()> {
+    CONVERT_SCRATCH.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let (buf, scratch, out) = &mut *borrow;
+        convert_stream_with_scratch(reader, writer, chunk_size, buf, scratch, out)
+    })
+}
+
+fn convert_stream_with_scratch<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    chunk_size: usize,
+    buf: &mut Vec<u8>,
+    scratch: &mut Vec<u8>,
+    out: &mut Vec<u8>,
+) -> Result<()> {
     let max_pattern: usize = MULTIBYTE.iter().map(|(p, _)| p.len()).max().unwrap_or(1);
     let keep = max_pattern.saturating_sub(1);
 
-    let mut buf: Vec<u8> = Vec::with_capacity(chunk_size + max_pattern);
-    let mut scratch = vec![0u8; chunk_size];
-    let mut out: Vec<u8> = Vec::with_capacity(chunk_size + max_pattern);
+    buf.clear();
+    out.clear();
+    if scratch.len() < chunk_size {
+        scratch.resize(chunk_size, 0);
+    }
+    let scratch = &mut scratch[..chunk_size];
 
     loop {
-        let n = reader.read(&mut scratch)?;
+        let n = reader.read(scratch)?;
         if n == 0 {
             // EOF: process the rest in full so any pending multibyte pattern
             // gets matched (or its prefix becomes plain bytes).
             out.clear();
-            convert_prefix(&buf, buf.len(), &mut out);
-            writer.write_all(&out)?;
+            convert_prefix(buf, buf.len(), out);
+            writer.write_all(out)?;
             return Ok(());
         }
         buf.extend_from_slice(&scratch[..n]);
@@ -71,8 +98,8 @@ pub fn convert_stream<R: Read, W: Write>(
         // `safe_end` has at least `max_pattern` bytes visible in `buf`.
         let safe_end = buf.len() - keep;
         out.clear();
-        let consumed = convert_prefix(&buf, safe_end, &mut out);
-        writer.write_all(&out)?;
+        let consumed = convert_prefix(buf, safe_end, out);
+        writer.write_all(out)?;
         buf.drain(..consumed);
     }
 }
@@ -231,6 +258,28 @@ mod tests {
                     .copied(),
             )
             .collect();
+        assert_eq!(convert_buffer(&fixture), convert_buffer_legacy(&fixture));
+    }
+
+    /// Buffer denso de patterns multibyte (cada padrão aparece muitas vezes,
+    /// exercitando o backend SIMD do aho-corasick).
+    #[test]
+    fn convert_buffer_denso_em_patterns_equivale_ao_legado() {
+        let mut fixture: Vec<u8> = Vec::new();
+        for _ in 0..500 {
+            fixture.extend_from_slice(b"chr(251)\r\nchr(30)\r\nchr(24)\r\nchr(31)\r\n");
+        }
+        assert_eq!(convert_buffer(&fixture), convert_buffer_legacy(&fixture));
+    }
+
+    /// Buffer ASCII puro (sem nenhum pattern) — verifica que o caminho sem
+    /// matches preserva o byte-for-byte do `BYTE_MAP`.
+    #[test]
+    fn convert_buffer_ascii_puro_equivale_ao_legado() {
+        let mut fixture: Vec<u8> = Vec::new();
+        for _ in 0..500 {
+            fixture.extend_from_slice(b"static function teste()\n   local cTexto\n");
+        }
         assert_eq!(convert_buffer(&fixture), convert_buffer_legacy(&fixture));
     }
 
